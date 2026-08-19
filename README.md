@@ -77,3 +77,15 @@ answer = wrapper.generate(prompts, 8, num_tokens = 32, stop_token = 0)
     url     = {https://arxiv.org/abs/2603.15031},
 }
 ```
+
+```bibtex
+@misc{knupp2026depthrecurrentattentionmixturesgiving,
+    title   = {Depth-Recurrent Attention Mixtures: Giving Latent Reasoning the Attention it Deserves},
+    author  = {Jonas Knupp and Jan Hendrik Metzen and Jeremias Bohn and Georg Groh and Kristian Kersting},
+    year    = {2026},
+    eprint  = {2601.21582},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.AI},
+    url     = {https://arxiv.org/abs/2601.21582},
+}
+```
