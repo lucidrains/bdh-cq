@@ -25,6 +25,33 @@ ids = torch.randint(0, 20_000, (2, 1024))
 logits = model(ids) # (2, 1024, 20_000)
 ```
 
+For recurrent latent reasoning, wrap the model and pass an interleaving of
+token chunks and latent reasoning steps:
+
+```python
+from bdh_cq import BDH, BDHReasoningWrapper
+
+model = BDH(
+    dim = 512,
+    num_tokens = 256
+)
+
+wrapper = BDHReasoningWrapper(model)
+
+prompts = torch.randint(0, 256, (1, 64))
+answers = torch.randint(0, 256, (1, 32))
+
+# tensor stages are ingested, int stages are latent reasoning steps - any interleaving
+
+loss, logits, memories = wrapper(prompts, 8, answers, return_loss = True, return_memory = True)
+
+loss.backward()
+
+# generate an answer
+
+answer = wrapper.generate(prompts, 8, num_tokens = 32, stop_token = 0)
+```
+
 ## Citations
 
 ```bibtex

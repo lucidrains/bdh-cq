@@ -236,3 +236,64 @@ def test_attn_residual_depth_bias_wiring():
 
     assert not model.attn_residual.has_depth_bias_distance
     assert not hasattr(model.attn_residual, 'depth_bias')
+
+def test_bdh_reasoning_wrapper_generate():
+
+    # any interleaving of prompt tensors and latent steps, then an
+    # autoregressively decoded answer - paper sec. 3.3 / fig. 7
+
+    wrapper = BDHReasoningWrapper(make_model())
+
+    first_prompt = torch.randint(0, 16, (1, 10))
+    second_prompt = torch.randint(0, 16, (1, 15))
+
+    # greedy decoding to a fixed number of tokens
+
+    tokens = wrapper.generate(
+        first_prompt,
+        2,
+        second_prompt,
+        4,
+        num_tokens = 8
+    )
+    assert isinstance(tokens, list)
+    assert len(tokens) == 8
+    assert all(isinstance(token, int) for token in tokens)
+
+    # stop early on the stop token, or decode the full length otherwise
+
+    tokens = wrapper.generate(
+        first_prompt,
+        num_tokens = 100,
+        stop_token = 0
+    )
+    assert len(tokens) == 100 or tokens[-1] == 0
+
+    # memories can be returned and passed back in, so latent steps can be
+    # interleaved with the answer itself: generate, think, generate
+
+    first_answer, memories = wrapper.generate(
+        first_prompt,
+        2,
+        num_tokens = 5,
+        return_memory = True
+    )
+    middle_answer, memories = wrapper.generate(
+        3,
+        memories = memories,
+        num_tokens = 5,
+        return_memory = True
+    )
+    last_answer, memories = wrapper.generate(
+        3,
+        memories = memories,
+        num_tokens = 5,
+        return_memory = True
+    )
+
+    assert memories.tokens_seen == 10 + 2 + 5 + 3 + 5 + 3 + 5
+    assert len(first_answer) == len(middle_answer) == len(last_answer) == 5
+
+    # token ids stay in the vocabulary
+
+    assert all(0 <= token < 16 for token in first_answer + middle_answer + last_answer)

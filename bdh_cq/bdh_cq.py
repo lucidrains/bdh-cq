@@ -41,6 +41,11 @@ def LinearNoBias(dim, dim_out):
 def LayerNormNoParams(dim):
     return LayerNorm(dim, elementwise_affine = False)
 
+def top_k(logits, thres = 0.9):
+    num_keep = max(1, int((1 - thres) * logits.shape[-1]))
+    kth_largest = logits.topk(num_keep, dim = -1).values[..., -1:]
+    return logits.masked_fill(logits < kth_largest, -float('inf'))
+
 # attention residual depth bias
 # each latent key is biased on its sim by its distance from the end of reasoning
 
@@ -545,6 +550,79 @@ class BDHReasoningWrapper(Module):
 
         if return_memory:
             returns += (logits, memories)
+
+        return pop_if_len_one(returns)
+
+    def generate(
+        self,
+        *args,
+        memories = None,
+        num_tokens = None,
+        stop_token = None,
+        temperature = 1.,
+        filter_thres = 0.9,
+        update_memory = True,
+        return_memory = False
+    ):
+        # decode an answer autoregressively after the given stages - the same interleaving as forward,
+        # tensors ingested, ints latent reasoning steps - each generated token fed back in, seeded from
+        # the projection of the last latent position, which at training predicts the first answer token.
+        # stops early on `stop_token` when given. single sequence only
+
+        assert exists(num_tokens) or exists(stop_token), 'either num_tokens or stop_token must be given'
+        assert exists(memories) or len(args) > 0, 'must ingest tokens or pass memories before generating'
+
+        device = next(self.parameters()).device
+
+        # run the stages - any interleaving of prompt tensors and latent steps
+
+        _, memories = self(
+            *args,
+            memories = memories,
+            return_memory = True,
+            update_memory = update_memory
+        )
+
+        # the seed: the last latent position projects the first answer token at training time
+
+        latent = memories.embeds[..., -1:, :]
+        logits = self.bdh.to_logits(latent)
+
+        # decode one token at a time, feeding each back in, until num_tokens
+        # are generated or the stop token is sampled
+
+        tokens = []
+
+        while not exists(num_tokens) or len(tokens) < num_tokens:
+            if temperature == 0:
+                token = logits[:, -1].argmax(-1).item()
+            else:
+                token = logits[:, -1] / temperature
+
+                if filter_thres < 1.:
+                    token = top_k(token, filter_thres)
+
+                token = token.softmax(-1).multinomial(1).item()
+
+            tokens.append(token)
+
+            if exists(stop_token) and token == stop_token:
+                break
+
+            token_embeds = self.bdh.token_embed(torch.tensor([[token]], device = device))
+            logits, memories = self(
+                token_embeds,
+                memories = memories,
+                return_memory = True,
+                update_memory = update_memory
+            )
+
+        # returns
+
+        returns = (tokens,)
+
+        if return_memory:
+            returns += (memories,)
 
         return pop_if_len_one(returns)
 

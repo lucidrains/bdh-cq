@@ -1,6 +1,6 @@
 [project]
 name = "bdh-cq"
-version = "0.0.16"
+version = "0.0.17"
 description = "Implementation of BDH-CQ: In-Context Learning with Recurrent Latent Reasoning, proposed by Pathway Research"
 authors = [
     { name = "Phil Wang", email = "lucidrains@gmail.com" }
@@ -26,6 +26,7 @@ classifiers=[
 dependencies = [
     "einx>=0.4.0",
     "einops>=0.8.1",
+    "numpy",
     "rotary-embedding-torch",
     "torch>=2.5",
 ]
@@ -55,6 +56,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "datasets>=5.0.1",
+    "fire>=0.7.1",
     "tqdm>=4.70.0",
 ]
 
