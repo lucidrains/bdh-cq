@@ -428,11 +428,16 @@ class BDHReasoningWrapper(Module):
     def __init__(
         self,
         bdh: BDH,
-        ignore_index = -1
+        ignore_index = -1,
+        latent_step_embed = False
     ):
         super().__init__()
         self.bdh = bdh
         self.ignore_index = ignore_index
+
+        # optional learned embedding injected at the very start of each latent reasoning step
+
+        self.latent_step_embed = Parameter(zeros(bdh.dim)) if latent_step_embed else None
 
     def forward(
         self,
@@ -440,13 +445,22 @@ class BDHReasoningWrapper(Module):
         memories: Memory | None = None,
         return_loss = False,
         return_memory = False,
-        update_memory = False,
+        update_memory = True,
+        update_latent_memory = True,
+        update_memory_per_stage: list[bool] | None = None,
         weight: Tensor | None = None
     ):
         # allow for passing a single list or tuple of inputs
 
         if len(args) == 1 and isinstance(first(args), (list, tuple)):
             args = first(args)
+
+        # per-stage memory update flags zip with the stages and override the
+        # two bool flags, so they never conflict - must cover every stage
+
+        if exists(update_memory_per_stage):
+            assert len(update_memory_per_stage) == len(args), 'update_memory_per_stage must have one flag per stage'
+            assert all(isinstance(flag, bool) for flag in update_memory_per_stage)
 
         # loop through parallel tokens and latent reasoning steps
 
@@ -466,12 +480,18 @@ class BDHReasoningWrapper(Module):
 
         total_reasoning_iterations = sum(stage for stage in args if isinstance(stage, int))
 
-        for item in args:
+        for stage_index, item in enumerate(args):
+
+            # per-stage flag wins when given; the bool flags are the per-kind default
+
+            stage_update = update_memory_per_stage[stage_index] if exists(update_memory_per_stage) else None
 
             # latent reasoning step, each step projected to predict the first token of the next segment
 
             if isinstance(item, int):
                 assert exists(memories), 'must ingest tokens before latent reasoning'
+
+                # the query's last hidden, already conditioned on the prompt memory (eq. 2, E_theta)
 
                 latent = memories.embeds[..., -1:, :]
 
@@ -480,8 +500,13 @@ class BDHReasoningWrapper(Module):
                 if not exists(all_block_outputs):
                     all_block_outputs = [latent]
 
+                update = default(stage_update, update_latent_memory)
+
                 for _ in range(item):
-                    _, memories = self.bdh(latent, memories = memories, return_memory = True, return_logits = False, update_memory = update_memory, all_block_outputs = all_block_outputs, total_reasoning_iterations = total_reasoning_iterations)
+                    if exists(self.latent_step_embed):
+                        latent = latent + self.latent_step_embed
+
+                    _, memories = self.bdh(latent, memories = memories, return_memory = True, return_logits = False, update_memory = update, all_block_outputs = all_block_outputs, total_reasoning_iterations = total_reasoning_iterations)
 
                     latent = memories.embeds
 
@@ -503,9 +528,11 @@ class BDHReasoningWrapper(Module):
 
                     num_labeled_latents = len(latent_logits)
 
-                # the depth bias applies only to the latent reasoning steps, never the parallel token passes
+                # depth bias applies only to latent steps, never parallel token passes
 
-                logits, memories = self.bdh(item, memories = memories, return_memory = True, total_reasoning_iterations = 0)
+                update = default(stage_update, update_memory)
+
+                logits, memories = self.bdh(item, memories = memories, update_memory = update, return_memory = True, total_reasoning_iterations = 0)
 
         # return
 
@@ -562,6 +589,8 @@ class BDHReasoningWrapper(Module):
         temperature = 1.,
         filter_thres = 0.9,
         update_memory = True,
+        update_latent_memory = True,
+        update_memory_per_stage: list[bool] | None = None,
         return_memory = False
     ):
         # decode an answer autoregressively after the given stages - the same interleaving as forward,
@@ -580,7 +609,9 @@ class BDHReasoningWrapper(Module):
             *args,
             memories = memories,
             return_memory = True,
-            update_memory = update_memory
+            update_memory = update_memory,
+            update_latent_memory = update_latent_memory,
+            update_memory_per_stage = update_memory_per_stage
         )
 
         # the seed: the last latent position projects the first answer token at training time
@@ -614,7 +645,8 @@ class BDHReasoningWrapper(Module):
                 token_embeds,
                 memories = memories,
                 return_memory = True,
-                update_memory = update_memory
+                update_memory = update_memory,
+                update_latent_memory = update_latent_memory
             )
 
         # returns

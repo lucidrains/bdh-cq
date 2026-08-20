@@ -50,7 +50,9 @@ def run(
     device: str = "cpu",
     family: str = "order",
     steps: int = 800,
-    seed: int = 3
+    seed: int = 3,
+    write_prompt_to_memory: bool = True,  # False: ablate conditioning on the prompt memory (eq. 2)
+    latent_step_embed: bool = False  # learned embedding injected at the start of each latent reasoning step
 ):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -68,7 +70,7 @@ def run(
         dim_qk_heads = 1024,
         attn_residual = True,
         attn_residual_depth_bias_distance = 1
-    )).to(device)
+    ), latent_step_embed = latent_step_embed).to(device)
 
     # train with the latent effort drawn uniformly over 0..MAX_REASONING_STEPS
     # each step, so every reasoning effort is in distribution at inference
@@ -84,7 +86,7 @@ def run(
 
         reasoning_steps = rng.randint(0, MAX_REASONING_STEPS)
 
-        loss = train_loss(wrapper, task, reasoning_steps, class_weights = CLASS_WEIGHTS)
+        loss = train_loss(wrapper, task, reasoning_steps, class_weights = CLASS_WEIGHTS, update_memory = write_prompt_to_memory)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(wrapper.parameters(), 1.0)
         opt.step()
@@ -116,7 +118,7 @@ def run(
                     size = SIZES[family]
                 )
 
-                memories = ingest(wrapper, task_prompt(task))
+                memories = ingest(wrapper, task_prompt(task), update_memory = write_prompt_to_memory)
 
                 for _, _, target in task["test"]:
                     num_outputs += 1

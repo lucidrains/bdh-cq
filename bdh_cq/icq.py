@@ -135,20 +135,23 @@ def ingest(
     wrapper: BDHReasoningWrapper,
     ids: list[int],
     memories: Memory | None = None,
-    chunk_size: int = CHUNK_SIZE
+    chunk_size: int = CHUNK_SIZE,
+    update_memory: bool = True
 ) -> Memory:
-    # run a token sequence through the model in chunks, carrying memory
+    # run a token sequence through the model in chunks, carrying memory;
+    # update_memory = False ablates the query's conditioning on the prompt (eq. 1, 2)
 
     device = device_of(wrapper)
     for chunk in _chunks(ids, chunk_size):
-        _, memories = wrapper(chunk.to(device), memories = memories, return_memory = True)
+        _, memories = wrapper(chunk.to(device), memories = memories, update_memory = update_memory, return_memory = True)
     return memories
 
 
 def ingest_hiddens(
     wrapper: BDHReasoningWrapper,
     ids: list[int],
-    chunk_size: int = CHUNK_SIZE
+    chunk_size: int = CHUNK_SIZE,
+    update_memory: bool = True
 ) -> tuple[Memory, Tensor, Tensor]:
     # ingest in chunks, collecting hiddens and per-chunk logits for the
     # next-token targets over the whole prompt
@@ -157,7 +160,7 @@ def ingest_hiddens(
     memories, hiddens, logits = None, [], []
 
     for chunk in _chunks(ids, chunk_size):
-        chunk_logits, memories = wrapper(chunk.to(device), memories = memories, return_memory = True)
+        chunk_logits, memories = wrapper(chunk.to(device), memories = memories, update_memory = update_memory, return_memory = True)
         hiddens.append(memories.embeds)
         logits.append(chunk_logits)
 
@@ -170,7 +173,9 @@ def train_loss(
     wrapper: BDHReasoningWrapper,
     task: Task,
     steps: int,
-    class_weights: Tensor | None = None
+    class_weights: Tensor | None = None,
+    update_memory: bool = True,
+    update_latent_memory: bool = True
 ) -> Tensor:
     # prompt next-token targets (demos included), plus the wrapper loss:
     # every latent step predicts the first answer token, every answer
@@ -180,7 +185,7 @@ def train_loss(
     prompt_ids = task_prompt(task)
     answer = task_answer(task)
 
-    memories, _, prompt_logits = ingest_hiddens(wrapper, prompt_ids)
+    memories, _, prompt_logits = ingest_hiddens(wrapper, prompt_ids, update_memory = update_memory)
 
     # next-token targets over the prompt, ending with <out>
 
@@ -197,8 +202,8 @@ def train_loss(
         memories = memories,
         return_loss = True,
         return_memory = True,
-        update_memory = True,
-        weight = weight
+        weight = weight,
+        update_latent_memory = update_latent_memory
     )
 
     mask = prompt_targets != IN
@@ -218,6 +223,7 @@ def generate_answer(
     steps: int,
     memories: Memory | None = None,
     update_memory: bool = True,
+    update_latent_memory: bool = True,
     temperature: float = 0.
 ) -> list[int]:
     # decode the query output at the given latent effort, seeded from the
@@ -236,7 +242,8 @@ def generate_answer(
         num_tokens = length,
         stop_token = EOS,
         temperature = temperature,
-        update_memory = update_memory
+        update_memory = update_memory,
+        update_latent_memory = update_latent_memory
     )
 
     # the final position is the terminator; strip the model's guess when
