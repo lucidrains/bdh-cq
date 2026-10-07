@@ -180,7 +180,7 @@ class Copy(Task):
         inp = make_grid(h, w)
         for i, j in anchors:
             inp[i * k, j * k] = GRAY
-        draw_motif(inp, src, motif)
+        draw_motif(inp, (src[0] * k, src[1] * k), motif)
 
         out = inp.copy()
         for i, j in anchors:
