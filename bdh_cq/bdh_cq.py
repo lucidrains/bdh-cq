@@ -665,9 +665,12 @@ class BDHReasoningWrapper(Module):
             if exists(stop_token) and token == stop_token:
                 break
 
-            token_embeds = self.bdh.token_embed(torch.tensor([[token]], device = device))
+            # feed the token id, not its embedding - BDH.forward only applies post_embed_norm to
+            # integer ids, and training sees the answer as ids
+
+            token_ids = torch.tensor([[token]], device = device)
             logits, memories = self(
-                token_embeds,
+                token_ids,
                 memories = memories,
                 return_memory = True,
                 update_memory = update_memory,
