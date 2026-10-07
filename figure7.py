@@ -118,15 +118,22 @@ def run(
                     size = SIZES[family]
                 )
 
-                memories = ingest(wrapper, task_prompt(task), update_memory = write_prompt_to_memory)
+                # task_prompt / generate_answer read the query from task["test"][0], so score each
+                # test pair with its own single-pair task - otherwise the second target is compared
+                # against the prediction for the first query
 
-                for _, _, target in task["test"]:
+                for test_pair in task["test"]:
+                    query_task = {**task, "test": [test_pair]}
+                    target = test_pair[2]
+
+                    memories = ingest(wrapper, task_prompt(query_task), update_memory = write_prompt_to_memory)
+
                     num_outputs += 1
 
                     for reasoning_steps in REASONING_STEPS_SWEEP:
                         predicted = generate_answer(
                             wrapper,
-                            task,
+                            query_task,
                             reasoning_steps,
                             memories = memories
                         )
