@@ -1,10 +1,13 @@
 import torch
+
 from bdh_cq import BDH, BDHReasoningWrapper
 
+
 def test_greedy_generate_matches_teacher_forcing():
-    # greedy decoding should pick the same tokens the model predicts when the generated
-    # answer is teacher-forced back through the training path (token ids -> embed -> norm)
+    # greedy decoding should agree with the training path teacher forced on its own output
+
     torch.manual_seed(0)
+
     model = BDH(dim = 64, num_tokens = 16, depth = 2, heads = 2, dim_qk_heads = 256, rotary_dim = 16)
     wrapper = BDHReasoningWrapper(model).eval()
 
@@ -16,5 +19,4 @@ def test_greedy_generate_matches_teacher_forcing():
 
         _, logits, _ = wrapper(3, torch.tensor([tokens]), memories = memories, return_loss = True, return_memory = True)
 
-    teacher_forced_next = logits[0, :-1].argmax(dim = -1).tolist()
-    assert teacher_forced_next == tokens[1:]
+    assert logits[0, :-1].argmax(dim = -1).tolist() == tokens[1:]

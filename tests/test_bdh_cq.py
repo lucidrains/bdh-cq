@@ -88,6 +88,23 @@ def test_bdh_reasoning_wrapper(block_cls, stage_spec, logits_shape, seen):
 
     assert wrapper(make_stages(stage_spec)).shape == logits_shape
 
+@param
+def test_bdh_reasoning_wrapper_trailing_latent(block_cls):
+    # a run ending on latent reasoning has no logits of its own
+
+    wrapper = make_wrapper(block_cls)
+
+    logits, _ = wrapper(rand_ids((1, 10)), 2, return_memory = True)
+
+    assert logits is None
+
+    # and memories alone are enough to generate from
+
+    _, memories = wrapper(rand_ids((1, 10)), return_memory = True)
+    tokens = wrapper.generate(memories = memories, num_tokens = 3)
+
+    assert len(tokens) == 3
+
 # e2e - every latent step predicts the first token of the next segment, every answer position the next answer token
 
 @param

@@ -118,9 +118,7 @@ def run(
                     size = SIZES[family]
                 )
 
-                # task_prompt / generate_answer read the query from task["test"][0], so score each
-                # test pair with its own single-pair task - otherwise the second target is compared
-                # against the prediction for the first query
+                # the prompt and answer helpers read the query from test[0] - give each held-out pair a task of its own
 
                 for test_pair in task["test"]:
                     query_task = {**task, "test": [test_pair]}

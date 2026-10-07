@@ -557,11 +557,12 @@ class BDHReasoningWrapper(Module):
 
         # return
 
-        if isinstance(last(args), int):
-            # latent-terminated runs have no logits of their own; generate() already discards this value
-            logits = None
-
         if not return_loss:
+            # a run ending on latent reasoning has no logits of its own
+
+            if args and isinstance(last(args), int):
+                logits = None
+
             returns = (logits,)
 
             if return_memory:
@@ -665,8 +666,7 @@ class BDHReasoningWrapper(Module):
             if exists(stop_token) and token == stop_token:
                 break
 
-            # feed the token id, not its embedding - BDH.forward only applies post_embed_norm to
-            # integer ids, and training sees the answer as ids
+            # feed the sampled id, not its embedding, so it is normalized as in training
 
             token_ids = torch.tensor([[token]], device = device)
             logits, memories = self(
