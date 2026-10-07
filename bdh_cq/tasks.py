@@ -36,7 +36,8 @@ def make_grid(height: int, width: int) -> np.ndarray:
 
 def draw_motif(grid: np.ndarray, pos: tuple[int, int], motif: np.ndarray) -> None:
     i, j = pos
-    grid[i:i + motif.shape[0], j:j + motif.shape[1]] = motif
+    h, w = motif.shape
+    grid[i:i + h, j:j + w] = motif
 
 def draw_border(grid: np.ndarray, r: int, c: int, h: int, w: int, color: int) -> None:
     grid[r, c:c + w] = color

@@ -16,15 +16,19 @@ MODEL_KWARGS = dict(
 # the higher order layer slots into bdh in place of the order-1 layer, sharing
 # the outer machinery - every e2e test below runs against both
 
-BLOCK_CLASSES = [BDHBlock, HigherOrderBDHLayer]
+BLOCK_CLASSES = [
+    (BDHBlock, False),
+    (BDHBlock, True),
+    (HigherOrderBDHLayer, False)
+]
 
-param = pytest.mark.parametrize('block_cls', BLOCK_CLASSES, ids = ['BDH', 'HigherOrder'])
+param = pytest.mark.parametrize('block_cls, triadic', BLOCK_CLASSES, ids = ['BDH', 'BDH_triadic', 'HigherOrder'])
 
-def make_model(block_cls = BDHBlock, **overrides):
-    return BDH(**{**MODEL_KWARGS, 'block_cls': block_cls, **overrides})
+def make_model(block_cls = BDHBlock, triadic = False, **overrides):
+    return BDH(**{**MODEL_KWARGS, 'block_cls': block_cls, 'triadic': triadic, **overrides})
 
-def make_wrapper(block_cls = BDHBlock):
-    return BDHReasoningWrapper(make_model(block_cls))
+def make_wrapper(block_cls = BDHBlock, triadic = False, **overrides):
+    return BDHReasoningWrapper(make_model(block_cls, triadic = triadic, **overrides))
 
 def memory_equal(a, b):
     # order-1 memories are tensors, order-2 a tuple per layer
@@ -43,8 +47,8 @@ def make_stages(stage_spec):
     return [rand_ids(item) if isinstance(item, tuple) else item for item in stage_spec]
 
 @param
-def test_bdh_cq(block_cls):
-    model = make_model(block_cls, num_tokens = 256)
+def test_bdh_cq(block_cls, triadic):
+    model = make_model(block_cls, triadic = triadic, num_tokens = 256)
 
     ids = rand_ids((2, 1024), 256)
 
@@ -54,10 +58,10 @@ def test_bdh_cq(block_cls):
     assert model(ids, memories = memories).shape == logits.shape
 
 @param
-def test_bdh_cq_latent_reasoning(block_cls):
+def test_bdh_cq_latent_reasoning(block_cls, triadic):
     # raw model, latent reasoning loop with the memory writes frozen
 
-    model = make_model(block_cls)
+    model = make_model(block_cls, triadic = triadic)
 
     _, memories = model(rand_ids((1, 50)), return_memory = True)
 
@@ -76,8 +80,8 @@ def test_bdh_cq_latent_reasoning(block_cls):
     ([(2, 20), 8, (2, 30)], (2, 30, 16), 58),
     ([(1, 10), 2, (1, 15), 4, (1, 20)], (1, 20, 16), 51),
 ])
-def test_bdh_reasoning_wrapper(block_cls, stage_spec, logits_shape, seen):
-    wrapper = make_wrapper(block_cls)
+def test_bdh_reasoning_wrapper(block_cls, triadic, stage_spec, logits_shape, seen):
+    wrapper = make_wrapper(block_cls, triadic = triadic)
 
     logits, memories = wrapper(*make_stages(stage_spec), return_memory = True)
 
@@ -89,10 +93,10 @@ def test_bdh_reasoning_wrapper(block_cls, stage_spec, logits_shape, seen):
     assert wrapper(make_stages(stage_spec)).shape == logits_shape
 
 @param
-def test_bdh_reasoning_wrapper_trailing_latent(block_cls):
+def test_bdh_reasoning_wrapper_trailing_latent(block_cls, triadic):
     # a run ending on latent reasoning has no logits of its own
 
-    wrapper = make_wrapper(block_cls)
+    wrapper = make_wrapper(block_cls, triadic = triadic)
 
     logits, _ = wrapper(rand_ids((1, 10)), 2, return_memory = True)
 
@@ -115,8 +119,8 @@ def test_bdh_reasoning_wrapper_trailing_latent(block_cls):
     ([(2, 10), 4, (2, 15), 5, (2, 20)], 54, False),
     ([(2, 20), 8], None, True),
 ])
-def test_bdh_reasoning_wrapper_loss(block_cls, stage_spec, seen, rejected):
-    wrapper = make_wrapper(block_cls)
+def test_bdh_reasoning_wrapper_loss(block_cls, triadic, stage_spec, seen, rejected):
+    wrapper = make_wrapper(block_cls, triadic = triadic)
 
     if rejected:
         with pytest.raises(AssertionError):
@@ -136,8 +140,8 @@ def test_bdh_reasoning_wrapper_loss(block_cls, stage_spec, seen, rejected):
     ([(1, 10), 2, (1, 15), 4], 8, None),
     ([(1, 10)], 100, 0),
 ])
-def test_bdh_reasoning_wrapper_generate(block_cls, stage_spec, num_tokens, stop_token):
-    wrapper = make_wrapper(block_cls)
+def test_bdh_reasoning_wrapper_generate(block_cls, triadic, stage_spec, num_tokens, stop_token):
+    wrapper = make_wrapper(block_cls, triadic = triadic)
 
     tokens = wrapper.generate(make_stages(stage_spec), num_tokens = num_tokens, stop_token = stop_token)
 
@@ -154,8 +158,8 @@ def test_bdh_reasoning_wrapper_generate(block_cls, stage_spec, num_tokens, stop_
     assert all(0 <= token < 16 for token in first + middle + last)
 
 @param
-def test_bdh_reasoning_wrapper_update_memory(block_cls):
-    wrapper = make_wrapper(block_cls)
+def test_bdh_reasoning_wrapper_update_memory(block_cls, triadic):
+    wrapper = make_wrapper(block_cls, triadic = triadic)
 
     prompts, answers = rand_ids((2, 20)), rand_ids((2, 30))
 
@@ -209,10 +213,10 @@ def test_apply_rotary_emb_partial():
     assert torch.equal(rotated[:, :, 0, 16:24], t[:, :, 0, 16:24])
 
 @param
-def test_partial_rotary(block_cls):
+def test_partial_rotary(block_cls, triadic):
     # dim_qk is huge, a small slice of it is position-encoded
 
-    model = make_model(block_cls, dim_qk_heads = 512, rotary_dim = 16)
+    model = make_model(block_cls, triadic = triadic, dim_qk_heads = 512, rotary_dim = 16)
 
     assert model.rope.freqs.shape == (8,)
 
@@ -228,16 +232,16 @@ def test_partial_rotary(block_cls):
 
     # rotary_dim 0 disables position embeddings entirely
 
-    model = make_model(block_cls, dim_qk_heads = 512, rotary_dim = 0)
+    model = make_model(block_cls, triadic = triadic, dim_qk_heads = 512, rotary_dim = 0)
 
     assert not exists(model.rope)
     assert model(rand_ids((2, 20))).shape == (2, 20, 16)
 
 @param
-def test_attn_residual_recycling(block_cls):
+def test_attn_residual_recycling(block_cls, triadic):
     # alphafold2 style recycling - attend over the previous pass's per-layer hiddens
 
-    model = make_model(block_cls, attn_residual = True)
+    model = make_model(block_cls, triadic = triadic, attn_residual = True)
 
     tokens = rand_ids((1, 10))
 
@@ -252,12 +256,12 @@ def test_attn_residual_recycling(block_cls):
         model(tokens[:, :-1], all_block_outputs = hiddens)
 
 @param
-def test_attn_residual_depth_bias_wiring(block_cls):
+def test_attn_residual_depth_bias_wiring(block_cls, triadic):
     # latent hiddens aware of their distance from the end of reasoning
 
     prompts, answers = rand_ids((2, 20)), rand_ids((2, 30))
 
-    model = make_model(block_cls, depth = 4, attn_residual = True, attn_residual_depth_bias_distance = 2)
+    model = make_model(block_cls, triadic = triadic, depth = 4, attn_residual = True, attn_residual_depth_bias_distance = 2)
     loss = BDHReasoningWrapper(model)(prompts, 3, answers, return_loss = True)
     loss.backward()
 
@@ -266,7 +270,7 @@ def test_attn_residual_depth_bias_wiring(block_cls):
 
     # off at a distance of 0
 
-    model = make_model(block_cls, depth = 4, attn_residual = True)
+    model = make_model(block_cls, triadic = triadic, depth = 4, attn_residual = True)
     loss = BDHReasoningWrapper(model)(prompts, 3, answers, return_loss = True)
     loss.backward()
 

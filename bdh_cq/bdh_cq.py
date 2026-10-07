@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
+from torch_einops_utils.shape import shape, size
+
 from bdh_cq.rotary import RotaryEmbedding, apply_rotary_emb
 
 # constants
@@ -42,7 +44,7 @@ def LayerNormNoParams(dim):
     return LayerNorm(dim, elementwise_affine = False)
 
 def top_k(logits, thres = 0.9):
-    num_keep = max(1, int((1 - thres) * logits.shape[-1]))
+    num_keep = max(1, int((1 - thres) * size(logits, '... [l]')))
     kth_largest = logits.topk(num_keep, dim = -1).values[..., -1:]
     return logits.masked_fill(logits < kth_largest, -float('inf'))
 
@@ -156,6 +158,8 @@ class BDHBlock(Module):
         dim_queries_keys,
         qk_activation = nn.ReLU(),
         ff_activation = nn.ReLU(),
+        triadic = False,
+        triadic_dim = 8,
     ):
         super().__init__()
         dim_inner_qk = dim_queries_keys * heads
@@ -164,6 +168,10 @@ class BDHBlock(Module):
 
         self.split_heads = Rearrange('b n (h d) -> b h n d', h = heads)
         self.qk_activation = qk_activation
+
+        # triadic linear attention - bind the value to a second sparse key, E-fold larger state (https://arxiv.org/abs/2609.36529)
+
+        self.to_qk2 = LinearNoBias(dim, triadic_dim * heads) if triadic else None
 
         self.post_attn_norm = LayerNormNoParams(dim)
 
@@ -208,7 +216,13 @@ class BDHBlock(Module):
 
         sim = einsum('b h i d, b h j d -> b h i j', q, k)
 
-        i, j = sim.shape[-2:]
+        # triadic - the second sparse key is shared with its query, (q·k) ⊙ (q'·k') (eq. 7)
+
+        if exists(self.to_qk2):
+            q2 = k2 = self.split_heads(self.qk_activation(self.to_qk2(tokens)))
+            sim = sim * einsum('b h i e, b h j e -> b h i j', q2, k2)
+
+        i, j = shape(sim, 'b h [i j]')
         causal_mask = torch.ones((i, j), dtype = torch.bool, device = device).tril(-1) # omit self, seen in Reformer shared qk attention years ago
 
         attn = sim.masked_fill(~causal_mask, 0.)
@@ -220,7 +234,11 @@ class BDHBlock(Module):
         # past memories
 
         if exists(memories):
-            retrieved = einsum('b h n d, b h d e -> b h n e', q, memories)
+            if exists(self.to_qk2):
+                retrieved = einsum('b h n d, b h d e f, b h n e -> b h n f', q, memories, q2)
+            else:
+                retrieved = einsum('b h n d, b h d e -> b h n e', q, memories)
+
             agg = agg + retrieved
 
         # post attn norm
@@ -246,11 +264,14 @@ class BDHBlock(Module):
         if not return_memories:
             return out
 
-        memories = einsum('b h n d, b n e -> b h d e', k, v)
+        if exists(self.to_qk2):
+            memories = einsum('b h n d, b h n e, b n f -> b h d e f', k, k2, v)
+        else:
+            memories = einsum('b h n d, b n e -> b h d e', k, v)
 
         return out, memories
 
-    # the order-1 memory is a single tensor per layer
+    # a single tensor per layer, triadic included
 
     @staticmethod
     def combine_memories(new_memory, prev_memory):
@@ -271,6 +292,8 @@ class BDH(Module):
         block_cls = BDHBlock, # the order-1 block by default - the higher order layer slots in here
         qk_activation = nn.ReLU(),
         ff_activation = nn.ReLU(),
+        triadic = False,
+        triadic_dim = 8,
         attn_residual = False,
         attn_residual_tied = True,
         attn_residual_depth_bias_distance = 0,
@@ -281,6 +304,8 @@ class BDH(Module):
 
         assert divisible_by(rotary_dim, 2), 'rotary_dim must be even, as position embeddings rotate pairs of dims'
         assert rotary_dim <= dim_qk
+
+        assert not triadic or issubclass(block_cls, BDHBlock), 'triadic linear attention is only supported by the order-1 block'
 
         self.dim = dim
         self.token_embed = Embedding(num_tokens, dim)
@@ -297,11 +322,12 @@ class BDH(Module):
         self.post_embed_norm = LayerNormNoParams(dim)
 
         self.block = block_cls(
-            dim,
+            dim = dim,
             heads = heads,
             dim_queries_keys = dim_qk,
             qk_activation = qk_activation,
-            ff_activation = ff_activation
+            ff_activation = ff_activation,
+            **(dict(triadic = True, triadic_dim = triadic_dim) if triadic else dict())
         )
 
         self.post_norm = LayerNormNoParams(dim)
@@ -346,7 +372,7 @@ class BDH(Module):
 
         # variables
 
-        seq_len, depth = tokens.shape[-2], self.depth
+        seq_len, depth = size(tokens, 'b [n] d'), self.depth
 
         # the initial token embeddings can be attention residual-ed
 

@@ -12,6 +12,8 @@ from torch.optim import Adam
 
 from einops import rearrange
 
+from torch_einops_utils.shape import size
+
 from bdh_cq import BDH, HigherOrderBDHLayer
 
 def function_composition(seq_len, batch_size, num_classes = 10, composition_depth = 2, device = 'cpu'):
@@ -42,7 +44,7 @@ class Model(Module):
         self.net = BDH(block_cls = HigherOrderBDHLayer, **kwargs) if attn_type == 'ho_bdh' else BDH(**kwargs)
 
     def forward(self, x_one_hot):
-        pos = torch.arange(x_one_hot.shape[1], device = x_one_hot.device)
+        pos = torch.arange(size(x_one_hot, 'b [n] ...'), device = x_one_hot.device)
         return self.net(self.embedding(x_one_hot) + self.pos_enc(pos))
 
 def train_model(attn_type, layers, epochs, batch_size, lr, device, num_classes = 10, composition_depth = 2, seed = 42):

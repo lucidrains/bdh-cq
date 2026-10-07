@@ -7,6 +7,8 @@ from torch.amp import autocast
 
 from einops import einsum, rearrange, repeat
 
+from torch_einops_utils.shape import size
+
 # helper functions
 
 def rotate_half(x):
@@ -21,19 +23,20 @@ def rotate_half(x):
 def apply_rotary_emb(
     freqs,
     t,
-    start_index = 0,
-    seq_dim = -2
+    start_index = 0
 ):
     dtype = t.dtype
 
     if freqs.ndim == 2:
-        seq_len = t.shape[seq_dim]
+        seq_len = size(t, '... [n] d')
         freqs = freqs[-seq_len:]
 
-    rot_dim = freqs.shape[-1]
+    rot_dim = size(freqs, '... [d]')
     end_index = start_index + rot_dim
 
-    assert rot_dim <= t.shape[-1], f'feature dimension {t.shape[-1]} is not of sufficient size to rotate in all the positions {rot_dim}'
+    feature_dim = size(t, '... [d]')
+
+    assert rot_dim <= feature_dim, f'feature dimension {feature_dim} is not of sufficient size to rotate in all the positions {rot_dim}'
 
     # split t into three parts: left, middle (to be rotated), and right
 

@@ -90,7 +90,7 @@ class SlidingWindow(Dataset):
 
 # model
 
-def get_model(*, dim = DIM, depth = DEPTH, heads = HEADS, dim_qk_heads = DIM_QK_HEADS, attn_residual = True, attn_residual_tied = True):
+def get_model(*, dim = DIM, depth = DEPTH, heads = HEADS, dim_qk_heads = DIM_QK_HEADS, attn_residual = True, attn_residual_tied = True, triadic = False, triadic_dim = 8):
     return BDH(
         dim = dim,
         num_tokens = 256,
@@ -98,7 +98,9 @@ def get_model(*, dim = DIM, depth = DEPTH, heads = HEADS, dim_qk_heads = DIM_QK_
         heads = heads,
         dim_qk_heads = dim_qk_heads,
         attn_residual = attn_residual,
-        attn_residual_tied = attn_residual_tied
+        attn_residual_tied = attn_residual_tied,
+        triadic = triadic,
+        triadic_dim = triadic_dim
     )
 
 # sampling through the recurrent memory
@@ -147,6 +149,8 @@ def train(
     generate_every = GENERATE_EVERY,
     attn_residual = True,
     attn_residual_tied = True,
+    triadic = False,
+    triadic_dim = 8,
     wandb_log = True,
     checkpoint = CHECKPOINT,
     device = 'cuda'
@@ -158,7 +162,7 @@ def train(
     data = get_enwik8()
     train_ids, val_ids = encode(data[:TRAIN_CHARS]), encode(data[TRAIN_CHARS:(TRAIN_CHARS + VALIDATE_CHARS)])
 
-    model = get_model(attn_residual = attn_residual, attn_residual_tied = attn_residual_tied).to(device)
+    model = get_model(attn_residual = attn_residual, attn_residual_tied = attn_residual_tied, triadic = triadic, triadic_dim = triadic_dim).to(device)
 
     device_name = torch.cuda.get_device_name() if device.startswith('cuda') else device
 
