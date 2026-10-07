@@ -557,6 +557,10 @@ class BDHReasoningWrapper(Module):
 
         # return
 
+        if isinstance(last(args), int):
+            # latent-terminated runs have no logits of their own; generate() already discards this value
+            logits = None
+
         if not return_loss:
             returns = (logits,)
 
