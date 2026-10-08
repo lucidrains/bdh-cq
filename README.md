@@ -52,6 +52,21 @@ loss.backward()
 answer = wrapper.generate(prompts, 8, num_tokens = 32, stop_token = 0)
 ```
 
+When using `block_cls = HigherOrderBDHLayer`, each output evaluates the two-hop
+operator over its visible prefix. An earlier intermediate can read a later
+position within that prefix, preserving the function-composition relationship;
+positions beyond the current output cannot contribute. Full, chunked and
+single-token calls use the same operation.
+
+HigherOrder memory now retains historical intermediate keys, messages and masses
+alongside the leaf statistics, so cache size grows with the number of stored
+positions. Its computation also grows with context; it is not a constant-memory
+linear recurrent layer. Existing model weights remain compatible, but old
+two-tensor HigherOrder caches lack the required history and must be recreated by
+re-ingesting the context. Layer calls return the complete updated cache; pass the
+prior cache into the next call rather than merging independently computed caches.
+Frozen memory writes retain the supplied cache.
+
 ## Citations
 
 ```bibtex
