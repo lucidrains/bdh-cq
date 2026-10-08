@@ -120,6 +120,19 @@ def test_rotary_preserves_double_positions_and_activation_math():
     torch.testing.assert_close(rotated, reference, rtol = 0, atol = 0)
 
 
+def test_double_rotary_keeps_large_fractional_length_offset():
+    rope = RotaryEmbedding(8).double()
+    offset = 16777216.125
+    positions = torch.arange(3, dtype = torch.float64) + offset
+    expected = (positions[:, None] * rope.freqs).repeat_interleave(2, dim = -1)
+    tensor_phases = rope(positions)
+    length_phases = rope(3, offset = offset)
+
+    assert length_phases.dtype == torch.float64
+    torch.testing.assert_close(tensor_phases, expected, rtol = 0, atol = 0)
+    torch.testing.assert_close(length_phases, expected, rtol = 0, atol = 0)
+
+
 def test_rotary_phase_precision_under_cpu_autocast():
     rope = RotaryEmbedding(8).bfloat16()
     positions = torch.tensor([256, 257])

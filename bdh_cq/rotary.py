@@ -90,6 +90,15 @@ class RotaryEmbedding(Module):
             seq_len = pos_or_seq_len
             pos = arange(seq_len, device = self.device)
 
+        # floating offsets otherwise coerce integer positions to the default
+        # float dtype before phase promotion, losing double precision
+
+        if isinstance(offset, float) or (is_tensor(offset) and offset.is_floating_point()):
+            pos_dtype = torch.promote_types(torch.promote_types(pos.dtype, self.freqs.dtype), torch.float32)
+            if is_tensor(offset):
+                pos_dtype = torch.promote_types(pos_dtype, offset.dtype)
+            pos = pos.to(pos_dtype)
+
         pos = pos + offset
 
         # keep integer positions distinct before phase multiplication; low
