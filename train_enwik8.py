@@ -82,7 +82,7 @@ class SlidingWindow(Dataset):
         self.seq_len = seq_len
 
     def __len__(self):
-        return self.seq.numel() // self.seq_len
+        return max(0, (self.seq.numel() - 1) // self.seq_len)
 
     def __getitem__(self, ind):
         start = ind * self.seq_len
@@ -116,12 +116,13 @@ def sample(model, prompt, *, length = GENERATE_LENGTH, temperature = TEMPERATURE
     # ingest the prompt, then generate one token at a time, carrying the memory
 
     memory = None
-    _, memory = model(prompt_ids, memories = memory, return_memory = True)
+    logits, memory = model(prompt_ids, memories = memory, return_memory = True)
 
     sampled = []
 
-    for _ in range(length):
-        logits, memory = model(prompt_ids[:, -1:], memories = memory, return_memory = True)
+    for index in range(length):
+        if index > 0:
+            logits, memory = model(prompt_ids, memories = memory, return_memory = True)
 
         logits = logits[0, -1] / temperature
 
