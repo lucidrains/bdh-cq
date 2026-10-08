@@ -270,7 +270,7 @@ def cell_stats(pred: np.ndarray, target: np.ndarray):
     # (correct cells, total cells, dimensions valid)
 
     if pred.shape != target.shape:
-        return 0, 0, False
+        return 0, target.size, False
     total = target.size
     correct = int((pred == target).sum())
     return correct, total, True

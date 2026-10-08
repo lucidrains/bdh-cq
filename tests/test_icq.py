@@ -71,7 +71,18 @@ def test_cell_stats():
 
     # wrong dimensions are not counted as correct cells
 
-    assert cell_stats(np.zeros((2, 2)), np.zeros((3, 3)))[2] is False
+    assert cell_stats(np.zeros((2, 2)), np.zeros((3, 3))) == (0, 9, False)
+
+
+def test_cell_stats_keeps_malformed_outputs_in_denominator():
+    target = np.zeros((2, 2))
+    predictions = [target.copy(), np.zeros((1, 1))]
+    stats = [cell_stats(prediction, target) for prediction in predictions]
+
+    correct = sum(count for count, _, _ in stats)
+    total = sum(count for _, count, _ in stats)
+
+    assert correct / total == 0.5
 
 
 def test_ingest_and_hiddens(wrapper):
