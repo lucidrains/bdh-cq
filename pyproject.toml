@@ -41,7 +41,9 @@ examples = [
     "tqdm"
 ]
 test = [
-    "pytest"
+    "pytest",
+    "fire",
+    "tqdm"
 ]
 
 [tool.pytest.ini_options]
