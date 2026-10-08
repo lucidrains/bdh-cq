@@ -232,7 +232,7 @@ def generate_answer(
     # re-reading the demos
 
     if memories is None:
-        memories = ingest(wrapper, task_prompt(task))
+        memories = ingest(wrapper, task_prompt(task), update_memory = update_memory)
 
     length = answer_length(task)
 
