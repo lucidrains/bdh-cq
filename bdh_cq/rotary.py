@@ -5,7 +5,7 @@ from torch import arange, is_tensor, Tensor
 from torch.nn import Module, Parameter
 from torch.amp import autocast
 
-from einops import einsum, rearrange, repeat
+from einops import rearrange, repeat
 
 from torch_einops_utils.shape import size
 
@@ -44,11 +44,18 @@ def apply_rotary_emb(
     t_middle = t[..., start_index:end_index]
     t_right = t[..., end_index:]
 
+    # trig and rotation need at least float32 even for native half / bfloat16;
+    # retain double precision when either the phases or activations use it
+
+    compute_dtype = torch.promote_types(torch.promote_types(t.dtype, freqs.dtype), torch.float32)
+    freqs = freqs.to(compute_dtype)
+    t_middle = t_middle.to(compute_dtype)
+
     t_rotated = (t_middle * freqs.cos()) + (rotate_half(t_middle) * freqs.sin())
 
-    out = torch.cat((t_left, t_rotated, t_right), dim = -1)
+    out = torch.cat((t_left, t_rotated.to(dtype), t_right), dim = -1)
 
-    return out.type(dtype)
+    return out
 
 # rotary embedding module, yields the interleaved freqs per position
 
@@ -81,13 +88,24 @@ class RotaryEmbedding(Module):
             pos = pos_or_seq_len
         else:
             seq_len = pos_or_seq_len
-            pos = arange(seq_len, device = self.device, dtype = self.freqs.dtype)
+            pos = arange(seq_len, device = self.device)
+
+        # floating offsets otherwise coerce integer positions to the default
+        # float dtype before phase promotion, losing double precision
+
+        if isinstance(offset, float) or (is_tensor(offset) and offset.is_floating_point()):
+            pos_dtype = torch.promote_types(torch.promote_types(pos.dtype, self.freqs.dtype), torch.float32)
+            if is_tensor(offset):
+                pos_dtype = torch.promote_types(pos_dtype, offset.dtype)
+            pos = pos.to(pos_dtype)
 
         pos = pos + offset
 
-        # freqs, each frequency repeated for the cos/sin pair
+        # keep integer positions distinct before phase multiplication; low
+        # precision positions round together or overflow on long sequences
 
-        freqs = einsum(pos.type(self.freqs.dtype), self.freqs, '... i, j -> ... i j')
+        compute_dtype = torch.promote_types(torch.promote_types(pos.dtype, self.freqs.dtype), torch.float32)
+        freqs = pos.to(compute_dtype).unsqueeze(-1) * self.freqs.to(compute_dtype)
         freqs = repeat(freqs, '... n -> ... (n r)', r = 2)
 
         return freqs

@@ -59,12 +59,11 @@ def compute_attn_residual_depth_bias(
     total_reasoning_iterations
 ):
     total_latents = depth * total_reasoning_iterations
-    device = bias_schedule.device
 
     # no reasoning cycles, nothing to be away from the end of
 
     if total_latents == 0:
-        return zeros(num_keys, device = device)
+        return bias_schedule.new_zeros(num_keys)
 
     # biases are indexed by distance from the end of reasoning, one per cycle, repeated across the depths,
     # curtailed to the cycles that will exist, earlier cycles zero padded on the left, and the tail excised
@@ -76,7 +75,7 @@ def compute_attn_residual_depth_bias(
     schedule = repeat(bias_schedule, 'd -> (d depth)', depth = depth)
 
     if schedule.numel() < total_latents:
-        schedule = cat((zeros(total_latents - schedule.numel(), device = device), schedule))
+        schedule = cat((bias_schedule.new_zeros(total_latents - schedule.numel()), schedule))
 
     num_latents = num_keys - 1
 
@@ -89,7 +88,7 @@ def compute_attn_residual_depth_bias(
 
     # the seed latents precede reasoning, no bias
 
-    return cat((zeros(1, device = device), schedule))
+    return cat((bias_schedule.new_zeros(1), schedule))
 
 # residual
 
