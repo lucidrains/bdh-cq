@@ -6,8 +6,6 @@ from torch.nn import Module, ModuleList, Parameter, ReLU
 
 from einops.layers.torch import Rearrange
 
-import einx
-
 from bdh_cq.bdh_cq import (
     LinearNoBias,
     LayerNormNoParams,
@@ -19,6 +17,14 @@ from bdh_cq.rotary import apply_rotary_emb
 # order-2 poly attention (https://arxiv.org/abs/2602.02422), adapted for linear attention
 
 class HigherOrderBDHLayer(Module):
+    """Two-hop poly attention over each root's visible prefix.
+
+    Forward returns a complete (S3, z3, keys, messages, masses) cache whose
+    key/message histories grow with context. Independently computed caches
+    cannot be merged. Legacy two-tensor caches must be recreated by re-ingesting
+    the context; parameter shapes are unchanged.
+    """
+
     def __init__(
         self,
         dim,
@@ -84,52 +90,78 @@ class HigherOrderBDHLayer(Module):
 
         v3 = tokens
 
-        # pass 1 - kernel attention from q2 to q3, aggregating the tokens
+        batch, heads, seq_len, dim_qk = q2.shape
+        device = tokens.device
 
-        S3_local = einsum('b h n d, b n e -> b h d e', q3, v3)
-        z3_local = q3.sum(dim = -2)
+        if exists(memories) and len(memories) != 5:
+            raise ValueError('legacy HigherOrder memory is incomplete; re-ingest the context to recreate it')
 
-        S3 = S3_local if not exists(memories) else S3_local + memories[0]
-        z3 = z3_local if not exists(memories) else z3_local + memories[1]
-
-        msg_un = einsum('b h n d, b h d e -> b h n e', q2, S3)
-        s23 = einsum('b h n d, b h d -> b h n', q2, z3)
-
-        # omit attention to self
-
-        if self.omit_self:
-            self_terms = einsum('b h n d, b h n d -> b h n', q2, q3)
-            msg_un = msg_un - einx.multiply('b h n, b n e -> b h n e', self_terms, v3)
-            s23 = s23 - self_terms
-
-        # pass 2 - kernel attention from q1 to q2, weighted by the pass-1 mass
-
-        if self.include_pass1_mass:
-            msg_norm = msg_un
-            s23_norm = s23
+        if exists(memories):
+            S3, z3, past_keys, past_messages, past_masses = memories
         else:
-            msg_norm = einx.divide('b h n e, b h n -> b h n e', msg_un, s23.clamp_min(eps))
-            s23_norm = s23.clamp_min(eps)
+            S3 = q3.new_zeros(batch, heads, dim_qk, tokens.shape[-1])
+            z3 = q3.new_zeros(batch, heads, dim_qk)
 
-        S12 = einsum('b h n d, b h n e -> b h d e', q2, msg_norm)
-        z12 = einsum('b h n d, b h n -> b h d', q2, s23_norm)
+        # Seed new intermediates from past leaves; old messages already cover that prefix.
 
-        num = einsum('b h n d, b h d e -> b h n e', q1, S12)
-        den = einsum('b h n d, b h d -> b h n', q1, z12)
+        keys = q2
+        messages = einsum('b h n d, b h d e -> b h n e', q2, S3)
+        masses = einsum('b h n d, b h d -> b h n', q2, z3)
 
-        # omit attention to self - subtracted from the queries directly, the
-        # self contribution to the pass-2 aggregate is a rank-one per position
+        if exists(memories):
+            keys = torch.cat((past_keys, keys), dim = -2)
+            messages = torch.cat((past_messages, messages), dim = -2)
+            masses = torch.cat((past_masses, masses), dim = -1)
 
+        past_len = keys.shape[-2] - seq_len
+        root_positions = torch.arange(seq_len, device = device) + past_len
+        key_positions = torch.arange(keys.shape[-2], device = device)
+
+        pass1 = einsum('b h j d, b h k d -> b h j k', keys, q3)
         if self.omit_self:
-            q1_dot_q2 = einsum('b h n d, b h n d -> b h n', q1, q2)
-            num = num - einx.multiply('b h n, b h n e -> b h n e', q1_dot_q2, msg_norm)
-            den = den - q1_dot_q2 * s23_norm
+            pass1 = pass1.masked_fill(key_positions[:, None] == root_positions[None, :], 0.)
 
-        out = einx.divide('b h n e, b h n -> b h n e', num, den + eps)
+        pass2 = einsum('b h i d, b h j d -> b h i j', q1, keys)
+        intermediate_mask = key_positions[None, :] <= root_positions[:, None] - int(self.omit_self)
+        pass2 = pass2.masked_fill(~intermediate_mask, 0.)
+
+        # Each intermediate may read any leaf in the root's prefix, including the root itself.
+        # ponytail: cubic chunk paths / serial normalized scans need a fused prefix kernel for large-chunk training.
+
+        if self.include_pass1_mass or seq_len == 0:
+            leaf_paths = einsum('b h i j, b h j k -> b h i k', pass2, pass1)
+            leaf_mask = torch.ones(seq_len, seq_len, device = device, dtype = torch.bool).tril()
+            leaf_paths = leaf_paths.masked_fill(~leaf_mask, 0.)
+
+            num = einsum('b h i j, b h j e -> b h i e', pass2, messages)
+            num = num + einsum('b h i k, b k e -> b h i e', leaf_paths, v3)
+            den = einsum('b h i j, b h j -> b h i', pass2, masses) + leaf_paths.sum(dim = -1)
+
+            if return_memories:
+                messages = messages + einsum('b h j k, b k e -> b h j e', pass1, v3)
+                masses = masses + pass1.sum(dim = -1)
+        else:
+            # Per-prefix normalization is nonlinear; update raw messages without self subtraction.
+
+            numerators, denominators = [], []
+            for index in range(seq_len):
+                scores = pass1[..., index]
+                messages = messages + scores[..., None] * v3[:, None, index:index + 1]
+                masses = masses + scores
+                normalizers = masses.clamp_min(eps)
+                weights = pass2[:, :, index]
+
+                numerators.append(einsum('b h j, b h j e -> b h e', weights, messages / normalizers[..., None]))
+                denominators.append(einsum('b h j, b h j -> b h', weights, normalizers))
+
+            num = torch.stack(numerators, dim = -2)
+            den = torch.stack(denominators, dim = -1)
+
+        out = num / (den[..., None] + eps)
 
         # fully masked query rows (all keys masked) should output zero
 
-        out = einx.where('b h n, b h n e, b h n e -> b h n e', den != 0., out, torch.zeros_like(out))
+        out = torch.where(den[..., None] != 0., out, torch.zeros_like(out))
 
         # post attn norm
 
@@ -147,20 +179,22 @@ class HigherOrderBDHLayer(Module):
 
         out = self.post_ff_norm(out)
 
-        # maybe return the local pass-1 key value stats as the fast weight memory
+        # Return complete state: existing intermediates now also contain this chunk's leaves.
 
         if not return_memories:
             return out
 
-        memories = (S3_local, z3_local)
+        S3 = S3 + einsum('b h n d, b n e -> b h d e', q3, v3)
+        z3 = z3 + q3.sum(dim = -2)
+        memories = (S3, z3, keys, messages, masses)
 
         return out, memories
 
-    # the order-2 memory is a pair of tensors per layer
+    # Forward already incorporated the previous cache; frozen writes skip this replacement.
 
     @staticmethod
     def combine_memories(new_memory, prev_memory):
-        if exists(prev_memory):
-            return tuple(l + p for l, p in zip(new_memory, prev_memory))
+        if len(new_memory) != 5 or (exists(prev_memory) and len(prev_memory) != 5):
+            raise ValueError('legacy HigherOrder memory is incomplete; re-ingest the context to recreate it')
 
         return new_memory
