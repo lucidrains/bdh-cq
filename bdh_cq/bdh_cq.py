@@ -517,6 +517,8 @@ class BDHReasoningWrapper(Module):
         latent_logits = []
         latent_labels = []
         num_labeled_latents = 0
+        final_boundary_logits = None
+        reasoning_stage_seen = False
 
         # the block outputs are aggregated across the reasoning chain and re-fed to the attention residual during
         # the latent steps, seeded with the initial token embeddings (paper: v_0 = h_1), which persist as the first key
@@ -537,6 +539,7 @@ class BDHReasoningWrapper(Module):
 
             if isinstance(item, int):
                 assert exists(memories), 'must ingest tokens before latent reasoning'
+                reasoning_stage_seen = True
 
                 # the query's last hidden, already conditioned on the prompt memory (eq. 2, E_theta)
 
@@ -570,10 +573,25 @@ class BDHReasoningWrapper(Module):
 
                     num_unlabeled = len(latent_logits) - num_labeled_latents
 
-                    if not item.is_floating_point():
+                    is_final_stage = stage_index == len(args) - 1
+                    if item.is_floating_point() and (is_final_stage or num_unlabeled):
+                        raise ValueError('supervised tensor stages require integer token IDs')
+
+                    # zero-effort decoding predicts the first answer token from the preceding hidden
+
+                    if (
+                        is_final_stage and not num_unlabeled and exists(memories)
+                        and (reasoning_stage_seen or stage_index == 0)
+                        and item.shape[1] > 0 and memories.embeds.shape[-2] > 0
+                    ):
+                        final_boundary_logits = self.bdh.to_logits(memories.embeds[..., -1:, :])
+
+                    if num_unlabeled:
                         latent_labels.append(repeat(item[:, :1], 'b 1 -> b n', n = num_unlabeled))
 
                     num_labeled_latents = len(latent_logits)
+
+                reasoning_stage_seen = False
 
                 # depth bias applies only to latent steps, never parallel token passes
 
@@ -607,6 +625,10 @@ class BDHReasoningWrapper(Module):
         all_logits = logits[:, :-1]
         labels = last_tensor[:, 1:]
 
+        if exists(final_boundary_logits):
+            all_logits = cat((final_boundary_logits, all_logits), dim = 1)
+            labels = cat((last_tensor[:, :1], labels), dim = 1)
+
         if latent_logits:
             latent_logits = cat(latent_logits, dim = 1)
             latent_labels = cat(latent_labels, dim = 1)
@@ -616,12 +638,15 @@ class BDHReasoningWrapper(Module):
 
         # loss
 
-        loss = F.cross_entropy(
-            rearrange(all_logits, 'b n l -> b l n'),
-            labels,
-            ignore_index = self.ignore_index,
-            weight = weight
-        )
+        if (labels != self.ignore_index).any():
+            loss = F.cross_entropy(
+                rearrange(all_logits, 'b n l -> b l n'),
+                labels,
+                ignore_index = self.ignore_index,
+                weight = weight
+            )
+        else:
+            loss = all_logits.sum() * 0.
 
         # returns
 
