@@ -523,10 +523,6 @@ class BDHReasoningWrapper(Module):
 
         all_block_outputs = None
 
-        # attention residual latents are aware of their distance from the end of reasoning
-
-        total_reasoning_iterations = sum(stage for stage in args if isinstance(stage, int))
-
         for stage_index, item in enumerate(args):
 
             # per-stage flag wins when given; the bool flags are the per-kind default
@@ -542,10 +538,17 @@ class BDHReasoningWrapper(Module):
 
                 latent = memories.embeds[..., -1:, :]
 
-                # seed the aggregate with the initial token embeddings, once
+                # seed the aggregate once per uninterrupted reasoning chain
 
                 if not exists(all_block_outputs):
                     all_block_outputs = [latent]
+
+                    total_reasoning_iterations = 0
+                    for future_stage in args[stage_index:]:
+                        if is_tensor(future_stage):
+                            break
+                        if isinstance(future_stage, int):
+                            total_reasoning_iterations += future_stage
 
                 update = default(stage_update, update_latent_memory)
 
@@ -563,6 +566,7 @@ class BDHReasoningWrapper(Module):
             # parallel tokens
 
             elif is_tensor(item):
+                all_block_outputs = None
                 last_tensor = item
 
                 if return_loss:

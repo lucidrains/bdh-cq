@@ -92,6 +92,58 @@ def test_bdh_reasoning_wrapper(block_cls, triadic, stage_spec, logits_shape, see
 
     assert wrapper(make_stages(stage_spec)).shape == logits_shape
 
+@pytest.mark.parametrize('tied', [True, False])
+@pytest.mark.parametrize('bias_distance', [0, 3])
+@pytest.mark.parametrize('write_flags', [
+    (True, True, True, True),
+    (False, False, False, False),
+    (True, False, False, True),
+])
+def test_bdh_reasoning_wrapper_residual_chain_restarts(tied, bias_distance, write_flags):
+    torch.manual_seed(0)
+    wrapper = make_wrapper(
+        dim = 16, depth = 2, heads = 1, dim_qk_heads = 16, rotary_dim = 4,
+        attn_residual = True, attn_residual_tied = tied,
+        attn_residual_depth_bias_distance = bias_distance
+    )
+
+    if bias_distance:
+        with torch.no_grad():
+            wrapper.bdh.attn_residual.depth_bias.copy_(torch.tensor([-0.5, 0.2, 1.0]))
+
+    prompt, next_segment = torch.tensor([[1, 2, 3]]), torch.tensor([[4, 5]])
+
+    _, combined = wrapper(prompt, 2, next_segment, 3, return_memory = True, update_memory_per_stage = list(write_flags))
+    _, prefix = wrapper(prompt, 2, next_segment, return_memory = True, update_memory_per_stage = list(write_flags[:3]))
+    _, split = wrapper(3, memories = prefix, return_memory = True, update_memory_per_stage = list(write_flags[3:]))
+
+    assert torch.equal(combined.embeds, split.embeds)
+    assert combined.tokens_seen == split.tokens_seen
+
+    for combined_memory, split_memory in zip(combined.fast_weight_memories, split.fast_weight_memories):
+        if combined_memory is None:
+            assert split_memory is None
+        else:
+            assert memory_equal(combined_memory, split_memory)
+
+@pytest.mark.parametrize('attn_residual', [False, True])
+@pytest.mark.parametrize('update_latent_memory', [False, True])
+def test_bdh_reasoning_wrapper_adjacent_reasoning_stages(attn_residual, update_latent_memory):
+    torch.manual_seed(0)
+    wrapper = make_wrapper(
+        dim = 16, depth = 2, heads = 1, dim_qk_heads = 16, rotary_dim = 4,
+        attn_residual = attn_residual, attn_residual_depth_bias_distance = 3
+    )
+    prompt = torch.tensor([[1, 2, 3]])
+    kwargs = dict(return_memory = True, update_latent_memory = update_latent_memory)
+
+    _, staged = wrapper(prompt, 0, 2, 0, 3, **kwargs)
+    _, contiguous = wrapper(prompt, 5, **kwargs)
+
+    assert torch.equal(staged.embeds, contiguous.embeds)
+    assert staged.tokens_seen == contiguous.tokens_seen
+    assert all(memory_equal(left, right) for left, right in zip(staged.fast_weight_memories, contiguous.fast_weight_memories))
+
 @param
 def test_bdh_reasoning_wrapper_trailing_latent(block_cls, triadic):
     # a run ending on latent reasoning has no logits of its own
