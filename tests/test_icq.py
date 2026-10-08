@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 import torch
 
+from bdh_cq import icq
+
 from bdh_cq.bdh_cq import BDHReasoningWrapper, exists
 from bdh_cq.icq import (make_model, encode_grid, encode_output, decode_grid,
                         task_prompt, task_answer, answer_length, task_at_level,
@@ -114,6 +116,24 @@ def test_generate_answer_protocol(wrapper):
 
     assert len(tokens_low_effort) <= length
     assert len(tokens_high_effort) <= length
+
+
+@pytest.mark.parametrize('update_memory', [False, True])
+@pytest.mark.parametrize('pre_ingested', [False, True])
+def test_generate_answer_prompt_memory_flag(wrapper, monkeypatch, update_memory, pre_ingested):
+    task = TASKS['propagation'](size = 5).generate(seed = 0)
+    original_ingest = icq.ingest
+    memories = original_ingest(wrapper, task_prompt(task)) if pre_ingested else None
+    observed_flags = []
+
+    def record_ingest(*args, update_memory = True, **kwargs):
+        observed_flags.append(update_memory)
+        return original_ingest(*args, update_memory = update_memory, **kwargs)
+
+    monkeypatch.setattr(icq, 'ingest', record_ingest)
+    generate_answer(wrapper, task, 0, memories = memories, update_memory = update_memory)
+
+    assert observed_flags == ([] if pre_ingested else [update_memory])
 
 
 def test_solve_returns_grid(wrapper):
